@@ -1,0 +1,279 @@
+---
+title: "Looking at random variables"
+output-file: "Script for random variables.pdf"
+format:
+  typst:
+    section-numbering: 1.1.a.
+    mainfont: Times New Roman
+    margin:
+      x: 2cm
+      y: 2cm
+    fig-width: 7
+    fig-height: 4.5
+    include-before-body:
+      text: |
+        #show figure.caption: set text(fill:rgb("#002D72"))
+        #show heading: set text(fill:rgb("#002D72"))
+echo: true
+warning: false
+---
+
+
+```{r packages}
+
+library(tidyverse)
+library(lme4)
+
+# setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
+
+```
+
+Written and spoken Data with long and short passive
+
+```{r}
+data <- read_csv('../data/data.csv')
+```
+
+
+# Introduction
+
+
+Let's first compute the grand mean of the dependent variable: the proportion of passive sentences in the whole data set
+
+```{r}
+data |> summarise(great_mean=mean(Voix))
+```
+We get 0.5, i.e.  50% of passive. This is because the data set is balanced for voice
+
+We run a first intercept-only logistic regression
+```{r}
+model_intercept <- glm(Voix~1,family = 'binomial',data=data)
+summary(model_intercept)
+```
+
+
+We transform back the log odds estimate of the logisitc regression to probabilities using the logistic function (plogis)
+
+```{r}
+coef(model_intercept) |> plogis()
+
+```
+
+We get the value of the grand mean: our model just models the fact that there is as many passive as active sentences
+
+# Random effects
+
+We first create a new variable that combines the lemma of the verbs with their semantic class. This is because we want to distinguish the several uses of the verbs when measuring their individual biases (Thuilier 2012).
+
+
+```{r}
+data <- data |> 
+   mutate(verb_sem=str_c(Lemme,Classe2,sep='_'))
+data$verb_sem |> head()
+```
+
+Those are the verb classes distinguished in LVF (Dubois & Dubois-Charlier 1997)
+
+- C: Communication
+- L: Location
+- D: Give verbs
+- R: Realization/creation
+- M: Movement without location change
+- S: Take/have verbs
+- E: Movement with location change
+- F: Hit verbs
+- U: Union
+- T: Transformation
+- P: Psychological
+- N: Provide verbs
+- H: Behavior, physical state
+- X: Auxiliaries and aspectual verbs
+
+We run a mixed effect logisitc regression with:
+
+- An intercept as fixed effect
+- By-verb intercepts as random effect
+
+```{r}
+model_random_intercepts <- glmer(Voix~1+(1|verb_sem),family = 'binomial',data=data)
+summary(model_random_intercepts)
+```
+
+Now the estimated grand mean is slightly different, because it is adjusted to the variation induced by verbs.
+
+```{r}
+
+fixef(model_random_intercepts) |> plogis()
+
+```
+
+
+We can retrieve what is shown in the "Random effects" section of the summary of the model:
+
+```{r}
+summary(model_random_intercepts)$varcor
+summary(model_random_intercepts)$ngrp
+```
+
+But this is just the variance of the by-verb random intercepts!
+
+Actually, the model fits an intercept for each, which is much more interesting.
+
+We can retrieve these estimates with the `ranef()` function.
+
+```{r}
+
+ranef(model_random_intercepts)$verb_sem |> head()
+
+```
+
+Let's make it a nicer data frame.
+
+```{r}
+verb_intercepts <- ranef(model_random_intercepts)$verb_sem |> 
+   as_tibble(rownames = 'verb') |>
+   rename(intercept=2) 
+
+verb_intercepts |> head()
+```
+
+Let's sort the values so we can see the most and least biased verbs (negative estimate → active, positive estimate → passive).
+
+```{r}
+verb_intercepts |> arrange(intercept) |> head()
+verb_intercepts |> arrange(intercept) |> tail()
+
+```
+
+Let's look at the verbs that have several semantic classes.
+
+```{r}
+# I split the verb column to get the verb and its class in separate columns
+verb_intercepts <- verb_intercepts |> 
+   separate(verb,into=c('verb','class'),sep='_')
+
+verb_intercepts |> 
+   group_by(verb) |> filter(n()>1) |> head()
+
+```
+
+*trouver* (find) is an interesting verb. It has two classes:
+
+- Locative (find a place)
+- Psychological (find a solution)
+
+Each use is associated with a different bias: locative *find* has an active bias, while psychological *find* has a passive bias
+
+```{r}
+
+verb_intercepts |> filter(verb=='trouver')
+
+data |> 
+   select(Lemme,Classe2,Construction,Phrase) |> 
+   filter(Lemme=="trouver")
+
+```
+
+# Mixed effect model with a main effect
+
+Let's compare two models:
+
+- One with a fixed intercept and by-verb random intercepts (what we had so far)
+- One with an additional main effect for length
+
+```{r}
+longpassive <- data |> filter(!(Construction=='Passif'&Courtlong=='court-clitique'))
+
+
+model1 <- glmer(Voix~1+(1|verb_sem),data=longpassive,family = 'binomial')
+model2 <- glmer(Voix~LongRel+(1|verb_sem),data=longpassive,family = 'binomial')
+
+summary(model1)
+summary(model2)
+
+```
+
+You can see that the intercepts are now very different. This is the case for random intercepts too:
+
+```{r}
+ranef(model1)$verb_sem |> head()
+ranef(model2)$verb_sem |> head()
+
+```
+
+This is because the interpretation of the intercept changes when we add predictors. The intercept is what we get when `LongRel=0`, i.e. when there is no length difference between the arguments. So now, our intercepts for individual verb correspond to the verb bias when the effect of length is neutralized.
+
+
+
+# Nested random effects
+
+So far, we considered the verb with their class. Actually, we can also assume that verb classes form relevant subgroups in our data and we want to account for this variability.
+
+Since each class can correspond to several classes, we can use *nested random effect*:
+
+- Our model will first fit an intercept for each verb class: `(1|Classe2)`
+- Then it adjusts an intercept for each verb within a class: `(1|Classe2:Lemme)`
+
+
+```{r}
+model_nested_random_effects <- glmer(Voix~1+(1|Classe2)+(1|Lemme:Classe2),data=data,family = 'binomial')
+
+summary(model_nested_random_effects)
+```
+
+
+We correctly got two  groups for random effects:
+
+```{r}
+
+summary(model_nested_random_effects)$ngrp
+
+```
+
+We can look at the biases of the verb classes:
+
+```{r}
+
+ranef(model_nested_random_effects)$Classe2 |> head()
+
+```
+
+Or at the biases of individual verbs:
+
+```{r}
+
+ranef(model_nested_random_effects)$Lemme |> head()
+
+```
+
+It is possible to get the full data frame of random effects with both estimates and standard deviations using `data.frame()`.
+
+```{r}
+
+data.frame(ranef(model_nested_random_effects)) |> head()
+
+```
+
+Let's make a plot from that to visualize the intercept of each verb class.
+
+```{r}
+
+data.frame(ranef(model_nested_random_effects)) |> 
+   rename(parameter=1,group=3,intercept=4,sd=5) |> 
+   filter(parameter=='Classe2') |> 
+   arrange(intercept) |> 
+   ggplot(aes(x=intercept,y=group))+
+   geom_point()+
+   geom_errorbar(aes(xmin=intercept-2*sd,xmax=intercept+2*sd),width = 0.5)+
+   scale_y_discrete(name='Verb class')+
+   scale_x_continuous(name='Intercept')+
+   theme_bw()
+
+```
+
+We now see that the most biased classes are:
+
+- Communication verbs, mostly used in active voice
+- Hit verbs, mostly used in passive voice
+
+This is what I found in the descriptive analysis, but now we see it in the model.
